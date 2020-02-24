@@ -25,7 +25,6 @@ import com.alibaba.nacossync.extension.holder.ZookeeperServerHolder;
 import com.alibaba.nacossync.monitor.MetricsManager;
 import com.alibaba.nacossync.pojo.model.TaskDO;
 import lombok.extern.slf4j.Slf4j;
-import org.apache.commons.lang3.StringUtils;
 import org.apache.curator.framework.recipes.cache.ChildData;
 import org.apache.curator.framework.recipes.cache.PathChildrenCache;
 import org.apache.curator.utils.CloseableUtils;
@@ -36,7 +35,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.function.Predicate;
 
 import static com.alibaba.nacossync.util.DubboConstants.*;
 import static com.alibaba.nacossync.util.StringUtils.*;
@@ -47,8 +45,8 @@ import static com.alibaba.nacossync.util.StringUtils.*;
  * @date: 2018-12-24 21:33
  */
 @Slf4j
-//@NacosSyncService(sourceCluster = ClusterTypeEnum.ZK, destinationCluster = ClusterTypeEnum.NACOS)
-public class ZookeeperSyncToNacosServiceImpl implements SyncService {
+@NacosSyncService(sourceCluster = ClusterTypeEnum.ZK, destinationCluster = ClusterTypeEnum.NACOS)
+public class ZookeeperWithoutDubboSyncToNacosServiceImpl implements SyncService {
 
     @Autowired
     private MetricsManager metricsManager;
@@ -69,8 +67,9 @@ public class ZookeeperSyncToNacosServiceImpl implements SyncService {
     private final SkyWalkerCacheServices skyWalkerCacheServices;
 
     @Autowired
-    public ZookeeperSyncToNacosServiceImpl(ZookeeperServerHolder zookeeperServerHolder,
-        NacosServerHolder nacosServerHolder, SkyWalkerCacheServices skyWalkerCacheServices) {
+    public ZookeeperWithoutDubboSyncToNacosServiceImpl(ZookeeperServerHolder zookeeperServerHolder,
+                                                       NacosServerHolder nacosServerHolder,
+                                                       SkyWalkerCacheServices skyWalkerCacheServices) {
         this.zookeeperServerHolder = zookeeperServerHolder;
         this.nacosServerHolder = nacosServerHolder;
         this.skyWalkerCacheServices = skyWalkerCacheServices;
@@ -87,40 +86,35 @@ public class ZookeeperSyncToNacosServiceImpl implements SyncService {
             NamingService destNamingService = nacosServerHolder.get(taskDO.getDestClusterId(), null);
             List<ChildData> currentData = pathChildrenCache.getCurrentData();
             for (ChildData childData : currentData) {
-                String path = childData.getPath();
+                String childDataString = new String(childData.getData());
+                System.out.println(childDataString);
                 Map<String, String> queryParam = parseQueryString(childData.getPath());
-                if (isMatch(taskDO, queryParam) && needSync(queryParam)) {
-                    Map<String, String> ipAndPortParam = parseIpAndPortString(path);
+                if (needSync(queryParam)) {
+                    Map<String, String> ipAndPortParam = parseIpAndPortStringForSpringCloudServices(childDataString);
                     Instance instance = buildSyncInstance(queryParam, ipAndPortParam, taskDO);
-                    destNamingService.registerInstance(getServiceNameFromCache(taskDO.getTaskId(), queryParam),
-                        instance);
+                    destNamingService.registerInstance(taskDO.getServiceName(), instance);
                 }
             }
             Objects.requireNonNull(pathChildrenCache).getListenable().addListener((client, event) -> {
                 try {
-
+                    String childDataString = new String(event.getData().getData());
                     String path = event.getData().getPath();
                     Map<String, String> queryParam = parseQueryString(path);
 
-                    if (isMatch(taskDO, queryParam) && needSync(queryParam)) {
-                        Map<String, String> ipAndPortParam = parseIpAndPortString(path);
+                    if (needSync(queryParam)) {
+                        Map<String, String> ipAndPortParam =
+                                parseIpAndPortStringForSpringCloudServices(childDataString);
                         Instance instance = buildSyncInstance(queryParam, ipAndPortParam, taskDO);
                         switch (event.getType()) {
                             case CHILD_ADDED:
-                                destNamingService.registerInstance(
-                                    getServiceNameFromCache(taskDO.getTaskId(), queryParam), instance);
-                                break;
                             case CHILD_UPDATED:
-
-                                destNamingService.registerInstance(
-                                    getServiceNameFromCache(taskDO.getTaskId(), queryParam), instance);
+                                destNamingService.registerInstance(taskDO.getServiceName(), instance);
                                 break;
                             case CHILD_REMOVED:
-
                                 destNamingService.deregisterInstance(
-                                    getServiceNameFromCache(taskDO.getTaskId(), queryParam),
-                                    ipAndPortParam.get(INSTANCE_IP_KEY),
-                                    Integer.parseInt(ipAndPortParam.get(INSTANCE_PORT_KEY)));
+                                        taskDO.getServiceName(),
+                                        ipAndPortParam.get(INSTANCE_IP_KEY),
+                                        Integer.parseInt(ipAndPortParam.get(INSTANCE_PORT_KEY)));
                                 nacosServiceNameMap.remove(taskDO.getTaskId());
                                 break;
                             default:
@@ -149,11 +143,11 @@ public class ZookeeperSyncToNacosServiceImpl implements SyncService {
             NamingService destNamingService = nacosServerHolder.get(taskDO.getDestClusterId(), null);
             if (nacosServiceNameMap.containsKey(taskDO.getTaskId())) {
                 List<Instance> allInstances =
-                    destNamingService.getAllInstances(nacosServiceNameMap.get(taskDO.getTaskId()));
+                        destNamingService.getAllInstances(nacosServiceNameMap.get(taskDO.getTaskId()));
                 for (Instance instance : allInstances) {
                     if (needDelete(instance.getMetadata(), taskDO)) {
                         destNamingService.deregisterInstance(instance.getServiceName(), instance.getIp(),
-                            instance.getPort());
+                                instance.getPort());
                     }
                     nacosServiceNameMap.remove(taskDO.getTaskId());
 
@@ -175,8 +169,8 @@ public class ZookeeperSyncToNacosServiceImpl implements SyncService {
         return pathChildrenCacheMap.computeIfAbsent(taskDO.getTaskId(), (key) -> {
             try {
                 PathChildrenCache pathChildrenCache =
-                    new PathChildrenCache(zookeeperServerHolder.get(taskDO.getSourceClusterId(), ""),
-                        convertDubboProvidersPath(taskDO.getServiceName()), false);
+                        new PathChildrenCache(zookeeperServerHolder.get(taskDO.getSourceClusterId(), ""),
+                                convertSpringCloudServiceName(taskDO.getServiceName()), true);
                 pathChildrenCache.start(PathChildrenCache.StartMode.BUILD_INITIAL_CACHE);
                 return pathChildrenCache;
             } catch (Exception e) {
@@ -184,33 +178,20 @@ public class ZookeeperSyncToNacosServiceImpl implements SyncService {
                 return null;
             }
         });
-
-    }
-
-    /**
-     * The instance information that needs to be synchronized is matched based on the dubbo version and the grouping
-     * name
-     */
-    protected boolean isMatch(TaskDO taskDO, Map<String, String> queryParam) {
-        Predicate<TaskDO> isVersionEq = (task) -> StringUtils.isBlank(taskDO.getVersion())
-            || StringUtils.equals(task.getVersion(), queryParam.get(VERSION_KEY));
-        Predicate<TaskDO> isGroupEq = (task) -> StringUtils.isBlank(taskDO.getGroupName())
-            || StringUtils.equals(task.getGroupName(), queryParam.get(GROUP_KEY));
-        return isVersionEq.and(isGroupEq).test(taskDO);
     }
 
     /**
      * create Nacos service instance
      *
-     * @param queryParam dubbo metadata
+     * @param queryParam   dubbo metadata
      * @param ipAndPortMap dubbo ip and address
      */
     protected Instance buildSyncInstance(Map<String, String> queryParam, Map<String, String> ipAndPortMap,
-        TaskDO taskDO) {
+                                         TaskDO taskDO) {
         Instance temp = new Instance();
         temp.setIp(ipAndPortMap.get(INSTANCE_IP_KEY));
         temp.setPort(Integer.parseInt(ipAndPortMap.get(INSTANCE_PORT_KEY)));
-        temp.setServiceName(getServiceNameFromCache(taskDO.getTaskId(), queryParam));
+        temp.setServiceName(taskDO.getServiceName());
         temp.setWeight(Double.valueOf(queryParam.get(WEIGHT_KEY) == null ? "1.0" : queryParam.get(WEIGHT_KEY)));
         temp.setHealthy(true);
 
@@ -218,20 +199,9 @@ public class ZookeeperSyncToNacosServiceImpl implements SyncService {
         metaData.put(PROTOCOL_KEY, ipAndPortMap.get(PROTOCOL_KEY));
         metaData.put(SkyWalkerConstants.DEST_CLUSTERID_KEY, taskDO.getDestClusterId());
         metaData.put(SkyWalkerConstants.SYNC_SOURCE_KEY,
-            skyWalkerCacheServices.getClusterType(taskDO.getSourceClusterId()).getCode());
+                skyWalkerCacheServices.getClusterType(taskDO.getSourceClusterId()).getCode());
         metaData.put(SkyWalkerConstants.SOURCE_CLUSTERID_KEY, taskDO.getSourceClusterId());
         temp.setMetadata(metaData);
         return temp;
     }
-
-    /**
-     * cteate Dubbo service name
-     *
-     * @param taskId task id
-     * @param queryParam dubbo metadata
-     */
-    protected String getServiceNameFromCache(String taskId, Map<String, String> queryParam) {
-        return nacosServiceNameMap.computeIfAbsent(taskId, (key) -> createServiceName(queryParam));
-    }
-
 }

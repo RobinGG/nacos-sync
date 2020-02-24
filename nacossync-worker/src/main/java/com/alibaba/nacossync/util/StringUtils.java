@@ -12,11 +12,12 @@
  */
 package com.alibaba.nacossync.util;
 
+import com.alibaba.fastjson.JSON;
+import com.alibaba.fastjson.JSONObject;
 import com.google.common.base.Joiner;
 import com.google.common.collect.Maps;
 import lombok.extern.slf4j.Slf4j;
 
-import java.io.File;
 import java.io.UnsupportedEncodingException;
 import java.net.URLDecoder;
 import java.net.URLEncoder;
@@ -38,6 +39,7 @@ public final class StringUtils {
             .compile("([_.a-zA-Z0-9][-_.a-zA-Z0-9]*)[=](.*)");
     private static final Pattern IP_PORT_PATTERN = Pattern
             .compile(".*/(.*)://(\\d+\\.\\d+\\.\\d+\\.\\d+):(\\d+)");
+    public static final String SPRING_CLOUD_SERVICE_PATH_FORMAT = "/services/%s";
 
     /**
      * parse key-value pair.
@@ -89,6 +91,17 @@ public final class StringUtils {
         return str == null || str.isEmpty();
     }
 
+    public static Map<String, String> parseIpAndPortStringForSpringCloudServices(String path) {
+        JSONObject dataMap = JSON.parseObject(path);
+        // extract the ones that match the rules
+        Map<String, String> instanceMap = new HashMap<>(3);
+        // ip address
+        instanceMap.put(INSTANCE_IP_KEY, dataMap.getString("address"));
+        // port
+        instanceMap.put(INSTANCE_PORT_KEY, dataMap.getString("port"));
+        return instanceMap;
+    }
+
     public static Map<String, String> parseIpAndPortString(String path) {
 
         try {
@@ -111,6 +124,10 @@ public final class StringUtils {
             return Maps.newHashMap();
         }
 
+    }
+
+    public static String convertSpringCloudServiceName(String serviceName) {
+        return String.format(SPRING_CLOUD_SERVICE_PATH_FORMAT, serviceName);
     }
 
     public static String convertDubboProvidersPath(String interfaceName) {
